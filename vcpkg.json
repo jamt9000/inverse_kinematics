@@ -1,0 +1,20 @@
+{
+  "name": "inverse-kinematics",
+  "version": "1.0.0",
+  "dependencies": [
+    {
+      "name": "glfw3",
+      "version>=": "3.4"
+    },
+    {
+      "name": "glad"
+    },
+    {
+      "name": "glm"
+    },
+    {
+      "name": "imgui",
+      "features": ["glfw-binding", "opengl3-binding"]
+    }
+  ]
+}
