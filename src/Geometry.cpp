@@ -21,7 +21,7 @@ std::vector<Vertex> createCylinder(float radius, float height, int segments) {
         glm::vec3 normal1(cos(angle1), 0.0f, sin(angle1));
         glm::vec3 normal2(cos(angle2), 0.0f, sin(angle2));
 
-        // Side quad (two triangles)
+        // Side quad (two triangles) - start from 0 and extend up
         vertices.push_back({glm::vec3(x1, 0.0f, z1), normal1});
         vertices.push_back({glm::vec3(x2, 0.0f, z2), normal2});
         vertices.push_back({glm::vec3(x1, height, z1), normal1});

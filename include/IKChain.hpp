@@ -14,13 +14,14 @@ struct Joint {
     float minAngle;            // Constraint: minimum angle
     float maxAngle;            // Constraint: maximum angle
     
-    Joint(const glm::vec3& pos, float len, const glm::vec3& rotAxis = glm::vec3(0, 0, 1))
+    Joint(const glm::vec3& pos, float len, const glm::vec3& rotAxis = glm::vec3(0, 0, 1),
+          float minAng = -glm::pi<float>(), float maxAng = glm::pi<float>())
         : position(pos)
         , rotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f))
         , axis(rotAxis)
         , length(len)
-        , minAngle(-glm::pi<float>())
-        , maxAngle(glm::pi<float>())
+        , minAngle(minAng)
+        , maxAngle(maxAng)
     {}
 };
 

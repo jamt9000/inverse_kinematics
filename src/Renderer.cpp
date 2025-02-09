@@ -149,17 +149,25 @@ void Renderer::setupVertexAttributes(GLuint vao, GLuint vbo, const std::vector<f
 void Renderer::renderIKChain(const ik::IKChain& chain, const Shader& shader) {
     const auto& joints = chain.getJoints();
     const auto& positions = chain.getJointPositions();
-    const auto& target = chain.getTarget();  // Get target from chain
 
     // Draw segments first (so they appear behind joints)
-    for (size_t i = 0; i < positions.size() - 1; ++i) {
-        glm::vec3 direction = positions[i + 1] - positions[i];
-        float length = glm::length(direction);
-        direction = glm::normalize(direction);
+    for (size_t i = 0; i < joints.size(); ++i) {  // Draw one segment per joint
+        glm::vec3 start = positions[i];
+        glm::vec3 end;
+        if (i < positions.size() - 1) {
+            end = positions[i + 1];
+        } else {
+            // For the last segment, extend in the direction toward target using the joint's length
+            glm::vec3 direction = glm::normalize(chain.getTarget() - start);
+            end = start + direction * joints[i].length;
+        }
+        
+        glm::vec3 direction = glm::normalize(end - start);
+        float length = joints[i].length;  // Use the actual fixed length from the joint
         
         // Create segment model matrix starting from joint position
         glm::mat4 segmentModel = glm::mat4(1.0f);
-        segmentModel = glm::translate(segmentModel, positions[i]);  // Start at current joint
+        segmentModel = glm::translate(segmentModel, start);
         
         // Create rotation matrix to align segment with direction
         glm::vec3 yAxis(0.0f, 1.0f, 0.0f);
@@ -171,35 +179,7 @@ void Renderer::renderIKChain(const ik::IKChain& chain, const Shader& shader) {
             segmentModel = glm::rotate(segmentModel, angle, rotAxis);
         }
         
-        // Scale and position segment - extend fully between joints
-        segmentModel = glm::scale(segmentModel, glm::vec3(1.0f, length, 1.0f));  // Use full length
-        
-        shader.setMat4("model", segmentModel);
-        shader.setVec3("objectColor", glm::vec3(0.2f, 0.2f, 0.9f));  // Brighter blue for segments
-        
-        glBindVertexArray(gl.segmentVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 16 * 12);
-    }
-    
-    // For the last segment, draw to target
-    if (!positions.empty()) {
-        glm::vec3 direction = target - positions.back();
-        float length = glm::length(direction);
-        direction = glm::normalize(direction);
-        
-        glm::mat4 segmentModel = glm::mat4(1.0f);
-        segmentModel = glm::translate(segmentModel, positions.back());
-        
-        glm::vec3 yAxis(0.0f, 1.0f, 0.0f);
-        float angle = glm::acos(glm::dot(yAxis, direction));
-        glm::vec3 rotAxis = glm::cross(yAxis, direction);
-        
-        if (glm::length(rotAxis) > 0.0001f) {
-            rotAxis = glm::normalize(rotAxis);
-            segmentModel = glm::rotate(segmentModel, angle, rotAxis);
-        }
-        
-        // Use full length for the segment
+        // Scale to the fixed segment length
         segmentModel = glm::scale(segmentModel, glm::vec3(1.0f, length, 1.0f));
         
         shader.setMat4("model", segmentModel);
@@ -210,27 +190,24 @@ void Renderer::renderIKChain(const ik::IKChain& chain, const Shader& shader) {
     }
 
     // Draw joints on top
-    for (size_t i = 0; i < joints.size(); ++i) {
+    for (size_t i = 0; i <= joints.size(); ++i) {  // Changed to <= to include end joint
         glm::mat4 jointModel = glm::mat4(1.0f);
-        jointModel = glm::translate(jointModel, positions[i]);
+        glm::vec3 jointPos;
+        if (i < joints.size()) {
+            jointPos = positions[i];
+        } else {
+            // For the last joint, calculate its position at the end of the last segment
+            glm::vec3 lastJointPos = positions[positions.size() - 1];
+            glm::vec3 direction = glm::normalize(chain.getTarget() - lastJointPos);
+            jointPos = lastJointPos + direction * joints[joints.size() - 1].length;
+        }
+        jointModel = glm::translate(jointModel, jointPos);
         
         shader.setMat4("model", jointModel);
-        shader.setVec3("objectColor", glm::vec3(0.8f, 0.2f, 0.2f));  // Red for joints
+        shader.setVec3("objectColor", glm::vec3(0.8f, 0.2f, 0.2f));
         
         glBindVertexArray(gl.jointVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 32 * 32 * 6);  // Use sphere vertex count
-    }
-
-    // Draw end effector joint at the end of the last segment
-    if (!positions.empty()) {
-        glm::mat4 jointModel = glm::mat4(1.0f);
-        jointModel = glm::translate(jointModel, target);  // Place at the actual IK target
-        
-        shader.setMat4("model", jointModel);
-        shader.setVec3("objectColor", glm::vec3(0.8f, 0.2f, 0.2f));  // Red for joints
-        
-        glBindVertexArray(gl.jointVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 32 * 32 * 6);  // Use sphere vertex count
+        glDrawArrays(GL_TRIANGLES, 0, 32 * 32 * 6);
     }
 }
 
