@@ -8,20 +8,18 @@ namespace ik {
 
 struct Joint {
     glm::vec3 position;          // Joint position in local space
-    glm::quat rotation;          // Joint rotation
-    glm::vec3 axis;             // Rotation axis
+    glm::quat orientation;       // Joint orientation as quaternion
+    glm::vec3 axis;             // Primary rotation axis (for swing constraint)
     float length;               // Length to next joint
-    float minAngle;            // Constraint: minimum angle
-    float maxAngle;            // Constraint: maximum angle
+    float maxSwingAngle;       // Maximum swing angle (cone constraint)
     
     Joint(const glm::vec3& pos, float len, const glm::vec3& rotAxis = glm::vec3(0, 0, 1),
-          float minAng = -glm::pi<float>(), float maxAng = glm::pi<float>())
+          float maxSwing = glm::pi<float>() / 2.0f)
         : position(pos)
-        , rotation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f))
-        , axis(rotAxis)
+        , orientation(glm::quat(1.0f, 0.0f, 0.0f, 0.0f))
+        , axis(glm::normalize(rotAxis))
         , length(len)
-        , minAngle(minAng)
-        , maxAngle(maxAng)
+        , maxSwingAngle(maxSwing)
     {}
 };
 

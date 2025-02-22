@@ -2,41 +2,44 @@
 #include <imgui.h>
 
 Scene::Scene() : camera(glm::vec3(0.0f, 0.3f, 3.0f)) {  // Move camera back to see whole arm
-    float segmentLength = 0.3f;  // Fixed segment length
+    float segmentLength = 0.4f;  // Longer segments
     float baseHeight = -0.6f;    // Starting height
     
-    // Create first segment pointing straight up
+    // Base joint starts pointing up (+Y) and can rotate around Y axis
+    glm::quat baseOrientation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));  // Rotate +X to +Y
     ik::Joint baseJoint(
-        glm::vec3(0.0f, baseHeight, 0.0f),  // Base position stays on ground
+        glm::vec3(0.0f, baseHeight, 0.0f),
         segmentLength,
-        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation for base
-        -glm::pi<float>() / 2.0f,           // minAngle: -90 degrees
-        glm::pi<float>() / 2.0f             // maxAngle: +90 degrees
+        glm::vec3(0.0f, 1.0f, 0.0f),        // Y-axis rotation for base
+        glm::pi<float>() / 3.0f             // ±60 degrees cone
     );
+    baseJoint.orientation = baseOrientation;
     chain.addJoint(baseJoint);
 
-    // Position second joint bent forward
+    // Middle joint inherits base orientation and can rotate around X axis
+    glm::vec3 middlePos = baseJoint.position + baseOrientation * glm::vec3(0.0f, segmentLength, 0.0f);
     ik::Joint middleJoint(
-        glm::vec3(0.0f, baseHeight + segmentLength, 0.0f),  // Start at end of first segment
+        middlePos,
         segmentLength,
-        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation for middle joint
-        -glm::pi<float>() / 3.0f,           // minAngle: -60 degrees
-        glm::pi<float>() / 3.0f             // maxAngle: +60 degrees
+        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation
+        glm::pi<float>() / 4.0f             // ±45 degrees cone
     );
+    middleJoint.orientation = baseOrientation;  // Start aligned with base
     chain.addJoint(middleJoint);
 
-    // Position third joint bent back
+    // End joint inherits middle orientation and can rotate around X axis
+    glm::vec3 endPos = middlePos + baseOrientation * glm::vec3(0.0f, segmentLength, 0.0f);
     ik::Joint endJoint(
-        glm::vec3(0.0f, baseHeight + segmentLength * 1.7f, segmentLength * 0.7f),  // Bent position
-        segmentLength,
-        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation for end joint
-        -glm::pi<float>() / 3.0f,           // minAngle: -60 degrees
-        glm::pi<float>() / 3.0f             // maxAngle: +60 degrees
+        endPos,
+        segmentLength * 0.8f,                // Slightly shorter end segment
+        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation
+        glm::pi<float>() / 4.0f             // ±45 degrees cone
     );
+    endJoint.orientation = baseOrientation;  // Start aligned with others
     chain.addJoint(endJoint);
 
-    // Place target in an interesting position
-    targetPosition = glm::vec3(0.3f, baseHeight + segmentLength * 2, 0.3f);  // Off to the side
+    // Place target in a reachable position
+    targetPosition = glm::vec3(0.4f, -0.2f, 0.4f);  // Slightly up and to the side
 }
 
 void Scene::update() {
