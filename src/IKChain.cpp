@@ -1,6 +1,7 @@
 #include "IKChain.hpp"
 #include <glm/gtx/quaternion.hpp>
 #include <algorithm>
+#include <iostream>
 
 /*
  * FABRIK (Forward And Backward Reaching Inverse Kinematics)
@@ -56,176 +57,239 @@ glm::vec3 IKChain::getEndEffectorPosition() const {
     glm::quat totalRot(1.0f, 0.0f, 0.0f, 0.0f);
     
     for (const auto& joint : joints_) {
-        totalRot = totalRot * joint.rotation;
+        totalRot = totalRot * joint.orientation;
         pos += totalRot * glm::vec3(joint.length, 0.0f, 0.0f);
     }
     
     return pos;
 }
 
+// Helper function for swing-twist decomposition with improved numerical stability
+std::pair<glm::quat, glm::quat> decomposeSwingTwist(const glm::quat& q, const glm::vec3& twistAxis) {
+    // Normalize inputs for numerical stability
+    glm::quat qn = glm::normalize(q);
+    glm::vec3 axisN = glm::normalize(twistAxis);
+    
+    // Get the twist component
+    float d = 2.0f * (axisN.x * qn.x + axisN.y * qn.y + axisN.z * qn.z);
+    glm::quat twist(
+        qn.w,
+        axisN.x * d / 2.0f,
+        axisN.y * d / 2.0f,
+        axisN.z * d / 2.0f
+    );
+    
+    // Normalize twist
+    float len = std::sqrt(twist.w * twist.w + d * d / 4.0f);
+    if (len > 0.00001f) {
+        twist = twist * (1.0f / len);
+    } else {
+        twist = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    }
+    
+    // Get swing as swing = q * twist^-1
+    glm::quat swing = qn * glm::inverse(twist);
+    return {swing, twist};
+}
+
+// Helper to constrain a ball-socket joint
+void constrainBallSocket(Joint& joint, const Joint& parent) {
+    // Get the current direction of this joint in parent space
+    glm::vec3 currentDir = glm::normalize(joint.position - parent.position);
+    
+    // Get the rest direction in parent space
+    glm::vec3 restDir = glm::vec3(0.0f, 1.0f, 0.0f);  // Always +Y in parent space
+    
+    // Calculate angle between rest and current direction
+    float angle = std::acos(glm::clamp(glm::dot(restDir, currentDir), -1.0f, 1.0f));
+    
+    // If angle exceeds limit, clamp to cone surface
+    if (angle > joint.maxSwingAngle) {
+        // Create rotation axis perpendicular to rest direction
+        glm::vec3 rotAxis = glm::normalize(glm::cross(restDir, currentDir));
+        if (glm::length(rotAxis) < 0.001f) {
+            // If vectors are parallel, use any perpendicular axis
+            rotAxis = glm::normalize(glm::cross(restDir, glm::vec3(1.0f, 0.0f, 0.0f)));
+        }
+        
+        // Create rotation to place vector on cone surface
+        glm::quat clampRotation = glm::angleAxis(joint.maxSwingAngle, rotAxis);
+        glm::vec3 clampedDir = glm::normalize(clampRotation * restDir);
+        
+        // Update joint position to respect constraint
+        joint.position = parent.position + clampedDir * joint.length;
+        
+        // Update orientation to match clamped direction
+        glm::vec3 parentForward = parent.orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+        joint.orientation = glm::rotation(parentForward, clampedDir) * parent.orientation;
+    }
+}
+
+// Helper to clamp a direction to within a cone around a rotation axis
+glm::vec3 clampToCone(const glm::vec3& direction, const glm::vec3& referenceDir, const glm::vec3& rotationAxis, float maxAngle) {
+    // First, get the plane perpendicular to the rotation axis
+    glm::vec3 normalizedAxis = glm::normalize(rotationAxis);
+    
+    // Project both vectors onto this plane
+    glm::vec3 projectedRef = referenceDir - normalizedAxis * glm::dot(referenceDir, normalizedAxis);
+    glm::vec3 projectedDir = direction - normalizedAxis * glm::dot(direction, normalizedAxis);
+    
+    float projRefLen = glm::length(projectedRef);
+    float projDirLen = glm::length(projectedDir);
+    
+    // If either projection is too small, the vectors are nearly parallel to the axis
+    if (projRefLen < 0.0001f || projDirLen < 0.0001f) {
+        return referenceDir;
+    }
+    
+    // Normalize projections
+    projectedRef /= projRefLen;
+    projectedDir /= projDirLen;
+    
+    // Calculate signed angle in the rotation plane
+    float cosAngle = glm::dot(projectedRef, projectedDir);
+    float angle = std::acos(glm::clamp(cosAngle, -1.0f, 1.0f));
+    
+    // Get sign using cross product
+    if (glm::dot(glm::cross(projectedRef, projectedDir), normalizedAxis) < 0) {
+        angle = -angle;
+    }
+    
+    // If angle exceeds limit, clamp it
+    if (std::abs(angle) > maxAngle) {
+        // Create rotation that puts vector on cone surface
+        float clampedAngle = glm::sign(angle) * maxAngle;
+        glm::quat rotation = glm::angleAxis(clampedAngle, normalizedAxis);
+        return glm::normalize(rotation * referenceDir);
+    }
+    
+    return direction;
+}
+
+// Find nearest point on cone to target
+glm::vec3 findNearestPointOnCone(const glm::vec3& joint, const glm::vec3& parent, const glm::vec3& target, float maxAngle) {
+    // Project target onto joint-parent line
+    glm::vec3 axis = glm::normalize(joint - parent);
+    glm::vec3 toTarget = target - joint;
+    glm::vec3 projection = joint + axis * glm::dot(toTarget, axis);
+    
+    // If target is on or very close to the axis, return the point on the cone in any direction
+    if (glm::distance(target, projection) < 0.0001f) {
+        // Choose any perpendicular direction
+        glm::vec3 perpDir = glm::normalize(glm::cross(axis, glm::vec3(0.0f, 1.0f, 0.0f)));
+        if (glm::length(perpDir) < 0.0001f) {
+            perpDir = glm::normalize(glm::cross(axis, glm::vec3(1.0f, 0.0f, 0.0f)));
+        }
+        return joint + (axis * std::cos(maxAngle) + perpDir * std::sin(maxAngle)) * glm::length(toTarget);
+    }
+    
+    // Get vector from projection to target
+    glm::vec3 toTargetPerp = target - projection;
+    float perpDist = glm::length(toTargetPerp);
+    float axialDist = glm::dot(toTarget, axis);
+    
+    // Calculate allowed radius at this axial distance
+    float allowedRadius = std::abs(axialDist) * std::tan(maxAngle);
+    
+    // If within cone, return target
+    if (perpDist <= allowedRadius) {
+        return target;
+    }
+    
+    // Otherwise, clamp to cone surface
+    glm::vec3 perpNorm = toTargetPerp / perpDist;
+    return projection + perpNorm * allowedRadius;
+}
+
 void IKChain::solve(int maxIterations, float tolerance) {
     if (joints_.empty()) return;
-
-    std::vector<glm::vec3> positions(joints_.size() + 1);
-    float totalError = 0.0f;
-    int stableCount = 0;
     
-    // Store initial positions
-    std::vector<glm::vec3> initialPositions;
-    initialPositions.reserve(joints_.size());
+    // Store original positions for constraint checking
+    std::vector<glm::vec3> originalPositions;
+    originalPositions.reserve(joints_.size());
     for (const auto& joint : joints_) {
-        initialPositions.push_back(joint.position);
+        originalPositions.push_back(joint.position);
     }
+    
+    // Check if target is reachable
+    float totalLength = 0.0f;
+    for (const auto& joint : joints_) {
+        totalLength += joint.length;
+    }
+    
+    float targetDistance = glm::distance(target_, joints_[0].position);
+    if (targetDistance > totalLength) {
+        // Target is unreachable - move joints to get as close as possible
+        glm::vec3 direction = glm::normalize(target_ - joints_[0].position);
+        
+        // Start from base
+        joints_[0].position = glm::vec3(0.0f, -0.6f, 0.0f);
+        
+        // Extend chain in target direction
+        for (size_t i = 0; i < joints_.size() - 1; ++i) {
+            joints_[i + 1].position = joints_[i].position + direction * joints_[i].length;
+        }
+        return;
+    }
+    
+    float totalError = std::numeric_limits<float>::max();
     
     for (int iter = 0; iter < maxIterations; ++iter) {
-        float prevError = totalError;
+        // --- Backward pass ---
+        // Set end effector at target
+        joints_.back().position = target_;
         
-        backwardPass();
-        forwardPass();
-        applyConstraints();
-        
-        // Interpolate between previous and new positions for smoother movement
-        float t = 0.3f;  // Interpolation factor (smaller = smoother but slower)
-        for (size_t i = 0; i < joints_.size(); ++i) {
-            joints_[i].position = glm::mix(initialPositions[i], joints_[i].position, t);
+        // Work backwards from target to base
+        for (int i = joints_.size() - 2; i >= 0; --i) {
+            glm::vec3 direction = glm::normalize(joints_[i].position - joints_[i + 1].position);
+            joints_[i].position = joints_[i + 1].position + direction * joints_[i].length;
         }
         
-        // Calculate total error
-        totalError = glm::distance(joints_.back().position, target_);
+        // --- Forward pass ---
+        // Fix base at origin
+        joints_[0].position = glm::vec3(0.0f, -0.6f, 0.0f);
         
-        // Check for convergence
-        if (totalError < tolerance) {
-            break;
-        }
-        
-        // Check for stability
-        if (std::abs(totalError - prevError) < tolerance * 0.1f) {
-            stableCount++;
-            if (stableCount > 3) break;  // Break if solution is stable for several iterations
-        } else {
-            stableCount = 0;
-        }
-    }
-
-    calculateRotations();
-}
-
-void IKChain::backwardPass() {
-    if (joints_.empty()) return;
-    
-    // Calculate the end effector position (one segment length beyond the last joint)
-    glm::vec3 endEffector = target_;
-    
-    // Work backwards from end effector to base
-    for (int i = joints_.size() - 1; i >= 0; --i) {
-        glm::vec3 nextPos = (i == joints_.size() - 1) ? endEffector : joints_[i + 1].position;
-        glm::vec3 currentPos = joints_[i].position;
-        glm::vec3 desiredDir = glm::normalize(nextPos - currentPos);
-        
-        // Project the desired direction onto the plane perpendicular to the rotation axis
-        glm::vec3 axis = joints_[i].axis;
-        glm::vec3 projectedDir = glm::normalize(desiredDir - glm::dot(desiredDir, axis) * axis);
-        
-        // Move the joint using the projected direction
-        if (i > 0) {
-            joints_[i].position = nextPos - projectedDir * joints_[i].length;
-        }
-    }
-}
-
-void IKChain::forwardPass() {
-    if (joints_.empty()) return;
-    
-    // Fix base at origin
-    joints_[0].position = glm::vec3(0.0f);
-    
-    // Work forwards from base to end
-    for (size_t i = 0; i < joints_.size() - 1; ++i) {
-        glm::vec3 currentPos = joints_[i].position;
-        glm::vec3 nextPos = joints_[i + 1].position;
-        glm::vec3 desiredDir = glm::normalize(nextPos - currentPos);
-        
-        // Project the desired direction onto the plane perpendicular to the rotation axis
-        glm::vec3 axis = joints_[i].axis;
-        glm::vec3 projectedDir = glm::normalize(desiredDir - glm::dot(desiredDir, axis) * axis);
-        
-        // Move the next joint using the projected direction
-        joints_[i + 1].position = currentPos + projectedDir * joints_[i].length;
-    }
-    
-    // Ensure last segment points toward target
-    if (!joints_.empty()) {
-        glm::vec3 lastPos = joints_.back().position;
-        glm::vec3 desiredDir = glm::normalize(target_ - lastPos);
-        
-        // Project the final direction onto the last joint's rotation plane
-        glm::vec3 axis = joints_.back().axis;
-        glm::vec3 projectedDir = glm::normalize(desiredDir - glm::dot(desiredDir, axis) * axis);
-        
-        // The end effector position would be:
-        // lastPos + projectedDir * joints_.back().length
-    }
-}
-
-void IKChain::applyConstraints() {
-    if (joints_.size() < 2) return;
-    
-    // For each joint, measure angle between its segments and apply constraints
-    for (size_t i = 0; i < joints_.size(); ++i) {
-        // Get the current segment's direction
-        glm::vec3 nextPos = (i < joints_.size() - 1) ? joints_[i+1].position : target_;
-        glm::vec3 currentDirection = glm::normalize(nextPos - joints_[i].position);
-        
-        // Get the previous segment's direction (or use reference direction for base)
-        glm::vec3 prevDirection;
-        if (i == 0) {
-            // For base joint, use vertical direction as reference
-            // This means the base joint measures angle from vertical in the XZ plane
-            prevDirection = glm::vec3(0.0f, 1.0f, 0.0f);
-        } else {
-            prevDirection = glm::normalize(joints_[i].position - joints_[i-1].position);
-        }
-        
-        // Project both directions onto plane perpendicular to rotation axis
-        // For Y-axis rotation (base): Projects onto XZ plane for left/right swivel
-        // For Z-axis rotation (others): Projects onto XY plane for up/down bending
-        glm::vec3 axis = joints_[i].axis;
-        glm::vec3 projectedPrev = glm::normalize(prevDirection - glm::dot(prevDirection, axis) * axis);
-        glm::vec3 projectedCurrent = glm::normalize(currentDirection - glm::dot(currentDirection, axis) * axis);
-        
-        // Calculate signed angle between the projected vectors in the rotation plane
-        // Sign is determined by cross product with rotation axis (+ is CCW around axis)
-        float angle = glm::sign(glm::dot(glm::cross(projectedPrev, projectedCurrent), axis)) *
-                     glm::acos(glm::clamp(glm::dot(projectedPrev, projectedCurrent), -1.0f, 1.0f));
-        
-        // Apply angle constraints
-        if (angle < joints_[i].minAngle || angle > joints_[i].maxAngle) {
-            float clampedAngle = glm::clamp(angle, joints_[i].minAngle, joints_[i].maxAngle);
+        // Work forwards from base to end effector
+        for (size_t i = 0; i < joints_.size() - 1; ++i) {
+            glm::vec3 direction = glm::normalize(joints_[i + 1].position - joints_[i].position);
             
-            // Create rotation around the joint's axis by the clamped angle
-            glm::quat rotation = glm::angleAxis(clampedAngle, axis);
-            // Apply rotation to the projected previous direction
-            glm::vec3 newDirection = glm::normalize(rotation * projectedPrev);
-            
-            // Update joint chain with constrained angle
-            if (i < joints_.size() - 1) {
-                joints_[i+1].position = joints_[i].position + newDirection * joints_[i].length;
+            // For each joint, check if it violates its cone constraint
+            if (i > 0) {  // Skip base joint
+                // Get the reference direction (previous segment)
+                glm::vec3 parentDir = glm::normalize(joints_[i].position - joints_[i-1].position);
                 
-                // Propagate the change to remaining joints to maintain chain integrity
-                for (size_t j = i + 2; j < joints_.size(); ++j) {
-                    glm::vec3 dir = glm::normalize(joints_[j].position - joints_[j-1].position);
-                    joints_[j].position = joints_[j-1].position + dir * joints_[j-1].length;
+                // Calculate angle between parent direction and current direction
+                float angle = std::acos(glm::clamp(glm::dot(parentDir, direction), -1.0f, 1.0f));
+                
+                std::cout << "Joint " << i << " angle: " << glm::degrees(angle) 
+                         << " (max: " << glm::degrees(joints_[i].maxSwingAngle) << ")" << std::endl;
+                
+                // If angle exceeds constraint, clamp it
+                if (angle > joints_[i].maxSwingAngle) {
+                    // Find rotation axis (perpendicular to both directions)
+                    glm::vec3 rotationAxis = glm::normalize(glm::cross(parentDir, direction));
+                    if (glm::length(rotationAxis) > 0.0001f) {
+                        // Create rotation to place direction on cone surface
+                        glm::quat rotation = glm::angleAxis(joints_[i].maxSwingAngle, rotationAxis);
+                        direction = glm::normalize(rotation * parentDir);
+                    }
                 }
             }
+            
+            // Update position while maintaining length
+            joints_[i + 1].position = joints_[i].position + direction * joints_[i].length;
         }
+        
+        // Check if we've reached the target within tolerance
+        float newError = glm::distance(joints_.back().position, target_);
+        if (newError < tolerance || std::abs(newError - totalError) < tolerance * 0.1f) {
+            break;
+        }
+        totalError = newError;
     }
-}
-
-void IKChain::calculateRotations() {
-    if (joints_.empty()) return;
     
+    // Calculate final orientations
     for (size_t i = 0; i < joints_.size(); ++i) {
-        // Get current segment direction
         glm::vec3 currentDir;
         if (i < joints_.size() - 1) {
             currentDir = glm::normalize(joints_[i + 1].position - joints_[i].position);
@@ -233,27 +297,17 @@ void IKChain::calculateRotations() {
             currentDir = glm::normalize(target_ - joints_[i].position);
         }
         
-        // Get previous segment direction (or up vector for base)
-        glm::vec3 prevDir;
-        if (i == 0) {
-            prevDir = glm::vec3(0.0f, 1.0f, 0.0f);  // Use up vector as reference for base
-        } else {
-            prevDir = glm::normalize(joints_[i].position - joints_[i-1].position);
-        }
-        
-        // Project both directions onto plane perpendicular to joint's rotation axis
-        glm::vec3 axis = joints_[i].axis;
-        glm::vec3 projectedPrev = glm::normalize(prevDir - glm::dot(prevDir, axis) * axis);
-        glm::vec3 projectedCurrent = glm::normalize(currentDir - glm::dot(currentDir, axis) * axis);
-        
-        // Calculate angle between projected vectors
-        float angle = glm::sign(glm::dot(glm::cross(projectedPrev, projectedCurrent), axis)) *
-                     glm::acos(glm::clamp(glm::dot(projectedPrev, projectedCurrent), -1.0f, 1.0f));
-        
-        // Create rotation around joint's axis
-        joints_[i].rotation = glm::angleAxis(angle, axis);
+        glm::vec3 referenceDir = (i == 0) ? glm::vec3(0.0f, 1.0f, 0.0f) : 
+            glm::normalize(joints_[i].position - joints_[i-1].position);
+            
+        joints_[i].orientation = glm::rotation(referenceDir, currentDir);
     }
 }
+
+void IKChain::applyConstraints() {}
+void IKChain::backwardPass() {}
+void IKChain::forwardPass() {}
+void IKChain::calculateRotations() {}
 
 std::vector<glm::vec3> IKChain::getJointPositions() const {
     std::vector<glm::vec3> positions;
@@ -271,7 +325,7 @@ std::vector<glm::quat> IKChain::getJointRotations() const {
     rotations.reserve(joints_.size());
     
     for (const auto& joint : joints_) {
-        rotations.push_back(joint.rotation);
+        rotations.push_back(joint.orientation);
     }
     
     return rotations;

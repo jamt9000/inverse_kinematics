@@ -1,40 +1,45 @@
 #include "Scene.hpp"
 #include <imgui.h>
 
-Scene::Scene() : camera(glm::vec3(0.0f, 0.3f, 2.0f)) {  // Directly in front, slightly elevated
-    float segmentLength = 0.3f;  // Fixed segment length
+Scene::Scene() : camera(glm::vec3(0.0f, 0.3f, 3.0f)) {  // Move camera back to see whole arm
+    float segmentLength = 0.4f;  // Longer segments
     float baseHeight = -0.6f;    // Starting height
     
-    // Create a vertical robotic arm with equal segment lengths
+    // Base joint starts pointing up (+Y) and can rotate around Y axis
+    glm::quat baseOrientation = glm::angleAxis(glm::half_pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f));  // Rotate +X to +Y
     ik::Joint baseJoint(
         glm::vec3(0.0f, baseHeight, 0.0f),
         segmentLength,
-        glm::vec3(0.0f, 1.0f, 0.0f),
-        -glm::pi<float>() / 2.0f,   // minAngle: -90 degrees
-        glm::pi<float>() / 2.0f     // maxAngle: +90 degrees
+        glm::vec3(0.0f, 1.0f, 0.0f),        // Y-axis rotation for base
+        glm::pi<float>() / 3.0f             // ±60 degrees cone
     );
+    baseJoint.orientation = baseOrientation;
     chain.addJoint(baseJoint);
 
+    // Middle joint inherits base orientation and can rotate around X axis
+    glm::vec3 middlePos = baseJoint.position + baseOrientation * glm::vec3(0.0f, segmentLength, 0.0f);
     ik::Joint middleJoint(
-        glm::vec3(0.0f, baseHeight + segmentLength, 0.0f),
+        middlePos,
         segmentLength,
-        glm::vec3(0.0f, 0.0f, 1.0f),
-        -glm::pi<float>() / 3.0f,   // minAngle: -60 degrees
-        glm::pi<float>() / 3.0f     // maxAngle: +60 degrees
+        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation
+        glm::pi<float>() / 4.0f             // ±45 degrees cone
     );
+    middleJoint.orientation = baseOrientation;  // Start aligned with base
     chain.addJoint(middleJoint);
 
+    // End joint inherits middle orientation and can rotate around X axis
+    glm::vec3 endPos = middlePos + baseOrientation * glm::vec3(0.0f, segmentLength, 0.0f);
     ik::Joint endJoint(
-        glm::vec3(0.0f, baseHeight + segmentLength * 2, 0.0f),
-        segmentLength,
-        glm::vec3(0.0f, 0.0f, 1.0f),
-        -glm::pi<float>() / 3.0f,   // minAngle: -60 degrees
-        glm::pi<float>() / 3.0f     // maxAngle: +60 degrees
+        endPos,
+        segmentLength * 0.8f,                // Slightly shorter end segment
+        glm::vec3(1.0f, 0.0f, 0.0f),        // X-axis rotation
+        glm::pi<float>() / 4.0f             // ±45 degrees cone
     );
+    endJoint.orientation = baseOrientation;  // Start aligned with others
     chain.addJoint(endJoint);
 
-    // Place target in a clear position
-    targetPosition = glm::vec3(0.4f, -0.2f, 0.3f);  // Off to the side and down a bit
+    // Place target in a reachable position
+    targetPosition = glm::vec3(0.4f, -0.2f, 0.4f);  // Slightly up and to the side
 }
 
 void Scene::update() {
@@ -71,5 +76,7 @@ void Scene::renderUI() const {
     ImGui::SliderFloat("X", &targetPosition.x, -0.8f, 0.8f);    // Left/right
     ImGui::SliderFloat("Y", &targetPosition.y, -0.6f, 0.6f);    // Up/down (adjusted for new base position)
     ImGui::SliderFloat("Z", &targetPosition.z, -0.8f, 0.8f);    // Forward/back
+    ImGui::Separator();
+    ImGui::Checkbox("Show Joint Cones", &showCones);
     ImGui::End();
 }
