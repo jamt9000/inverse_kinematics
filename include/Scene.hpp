@@ -26,6 +26,10 @@ public:
 private:
     ik::IKChain chain;
     Camera camera;
-    mutable glm::vec3 targetPosition{2.0f, 0.0f, 0.0f};  // mutable since we modify it in const UI method
-    mutable bool showCones = false;  // mutable since we modify it in const UI method
+    mutable glm::vec3 targetPosition;  // Make mutable since we modify it in const UI function
+    mutable bool showCones = false;    // Make mutable since we modify it in const UI function
+    mutable int numSegments = 3;       // Make mutable since we modify it in const UI function
+    bool needsRebuild = false;         // Flag to indicate chain needs rebuilding
+    
+    static ik::IKChain createChain(int numSegments);  // Static function to create chain
 };
