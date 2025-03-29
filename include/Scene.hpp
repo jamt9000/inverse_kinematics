@@ -29,7 +29,7 @@ private:
     mutable glm::vec3 targetPosition;  // Make mutable since we modify it in const UI function
     mutable bool showCones = false;    // Make mutable since we modify it in const UI function
     mutable int numSegments = 3;       // Make mutable since we modify it in const UI function
-    bool needsRebuild = false;         // Flag to indicate chain needs rebuilding
+    mutable bool needsRebuild = false; // Make mutable since we modify it in const UI function
     
     static ik::IKChain createChain(int numSegments);  // Static function to create chain
 };
